@@ -22,22 +22,22 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      # Authenticate GitHub Actions to Azure (ARM + ACR token)
+      # Authenticate GitHub Actions to Azure
       - name: Azure login
         uses: azure/login@v1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      # Required for Buildx + GHA cache
+      # Required for Buildx + cache
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 🔑 Authenticate Docker to ACR using Azure CLI (NO admin creds)
+      # Login to ACR using Azure CLI
       - name: Login to Azure Container Registry
         run: az acr login --name ${{ env.AZURE_CONTAINER_REGISTRY }}
 
-      # Build & push container image
-      - name: Build and push image to Azure Container Registry
+      # Build & push image
+      - name: Build and push image to ACR
         uses: docker/build-push-action@v4
         with:
           context: .
@@ -46,8 +46,8 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Deploy image + runtime env vars to existing Container App
-      - name: Deploy to Azure Container Apps
+      # Deploy image (no env vars here)
+      - name: Deploy image to Azure Container Apps
         uses: azure/container-apps-deploy-action@v1
         with:
           resourceGroup: ${{ env.RESOURCE_GROUP }}
@@ -56,13 +56,17 @@ jobs:
           ingress: external
           targetPort: 8000
           imageToDeploy: relationalregistry.azurecr.io/${{ env.CONTAINER_APP_NAME }}:${{ github.sha }}
-          environmentVariables: |
-            AZURE_SUBSCRIPTION_ID=${{ secrets.AZURE_SUBSCRIPTION_ID }}
-            AZURE_RESOURCE_GROUP=${{ secrets.AZURE_RESOURCE_GROUP }}
-            AZURE_LOCATION=${{ secrets.AZURE_LOCATION }}
-            AZURE_VNET_NAME=${{ secrets.AZURE_VNET_NAME }}
-            AZURE_SUBNET_NAME=${{ secrets.AZURE_SUBNET_NAME }}
-            AZURE_TENANT_ID=${{ secrets.AZURE_TENANT_ID }}
-            AZURE_CLIENT_ID=${{ secrets.AZURE_CLIENT_ID }}
-            AZURE_CLIENT_SECRET=${{ secrets.AZURE_CLIENT_SECRET }}
-            SSH_PUBLIC_KEY=${{ secrets.SSH_PUBLIC_KEY }}
+
+      # Update environment variables
+      - name: Update Container App Environment Variables via CLI
+        run: |
+          az containerapp update \
+            --name ${{ env.CONTAINER_APP_NAME }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --set-env-vars \
+              AZURE_SUBSCRIPTION_ID=${{ secrets.AZURE_SUBSCRIPTION_ID }} \
+              AZURE_RESOURCE_GROUP=${{ secrets.AZURE_RESOURCE_GROUP }} \
+              AZURE_LOCATION=${{ secrets.AZURE_LOCATION }} \
+              AZURE_VNET_NAME=${{ secrets.AZURE_VNET_NAME }} \
+              AZURE_SUBNET_NAME=${{ secrets.AZURE_SUBNET_NAME }} \
+              SSH_PUBLIC_KEY="${{ secrets.SSH_PUBLIC_KEY }}"
