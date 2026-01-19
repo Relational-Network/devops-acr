@@ -51,6 +51,7 @@ jobs:
           targetPort: 8000
           ingress: external
           imageToDeploy: relationalregistry.azurecr.io/${{ env.CONTAINER_APP_NAME }}:${{ github.sha }}
+          acrName: ${{ env.AZURE_CONTAINER_REGISTRY }}
           environmentVariables: |
             AZURE_SUBSCRIPTION_ID=${{ secrets.AZURE_SUBSCRIPTION_ID }}
             AZURE_RESOURCE_GROUP=${{ secrets.AZURE_RESOURCE_GROUP }}
