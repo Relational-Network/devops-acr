@@ -22,17 +22,21 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      # Authenticate GitHub Actions to Azure (ARM + ACR push)
+      # Authenticate GitHub Actions to Azure (ARM + ACR token)
       - name: Azure login
         uses: azure/login@v1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      # REQUIRED for gha cache support
+      # Required for Buildx + GHA cache
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Build & push container image to ACR
+      # 🔑 Authenticate Docker to ACR using Azure CLI (NO admin creds)
+      - name: Login to Azure Container Registry
+        run: az acr login --name ${{ env.AZURE_CONTAINER_REGISTRY }}
+
+      # Build & push container image
       - name: Build and push image to Azure Container Registry
         uses: docker/build-push-action@v4
         with:
@@ -42,7 +46,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Deploy image to existing Azure Container App
+      # Deploy image + runtime env vars to existing Container App
       - name: Deploy to Azure Container Apps
         uses: azure/container-apps-deploy-action@v1
         with:
@@ -52,3 +56,13 @@ jobs:
           ingress: external
           targetPort: 8000
           imageToDeploy: relationalregistry.azurecr.io/${{ env.CONTAINER_APP_NAME }}:${{ github.sha }}
+          environmentVariables: |
+            AZURE_SUBSCRIPTION_ID=${{ secrets.AZURE_SUBSCRIPTION_ID }}
+            AZURE_RESOURCE_GROUP=${{ secrets.AZURE_RESOURCE_GROUP }}
+            AZURE_LOCATION=${{ secrets.AZURE_LOCATION }}
+            AZURE_VNET_NAME=${{ secrets.AZURE_VNET_NAME }}
+            AZURE_SUBNET_NAME=${{ secrets.AZURE_SUBNET_NAME }}
+            AZURE_TENANT_ID=${{ secrets.AZURE_TENANT_ID }}
+            AZURE_CLIENT_ID=${{ secrets.AZURE_CLIENT_ID }}
+            AZURE_CLIENT_SECRET=${{ secrets.AZURE_CLIENT_SECRET }}
+            SSH_PUBLIC_KEY=${{ secrets.SSH_PUBLIC_KEY }}
