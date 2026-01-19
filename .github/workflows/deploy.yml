@@ -22,13 +22,17 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      # Authenticate GitHub Actions to Azure (for ARM + ACR push)
+      # Authenticate GitHub Actions to Azure (ARM + ACR push)
       - name: Azure login
         uses: azure/login@v1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      # Build & push container image
+      # REQUIRED for gha cache support
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Build & push container image to ACR
       - name: Build and push image to Azure Container Registry
         uses: docker/build-push-action@v4
         with:
