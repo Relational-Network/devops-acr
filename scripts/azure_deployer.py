@@ -385,7 +385,7 @@ class AzureVMDeployer:
 
     # Pull Docker image
     echo "Pulling Docker image..."
-    sudo docker pull binglekruger/ntls-ntc:v1
+    sudo docker pull binglekruger/ntls-ntc:v2
 
     # Verify image installation
     echo "Verifying Docker image installation..."
@@ -396,7 +396,7 @@ class AzureVMDeployer:
     TEMP_CONTAINER_ID=$(sudo docker run -d --name temp-container \\
         --device=/dev/sgx_enclave \\
         --device=/dev/sgx_provision \\
-        binglekruger/ntls-ntc:v1)
+        binglekruger/ntls-ntc:v2)
 
     # Wait for container to initialize
     echo "Waiting for container to initialize..."
