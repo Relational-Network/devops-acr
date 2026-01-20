@@ -427,7 +427,7 @@ class AzureVMDeployer:
         --name ntls-server \\
         --device=/dev/sgx_enclave \\
         --device=/dev/sgx_provision \\
-        binglekruger/ntls-ntc:v1
+        binglekruger/ntls-ntc:v2
 
     # Check if container is running
     echo "Checking container status..."
