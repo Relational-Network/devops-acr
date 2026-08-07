@@ -1,7 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Relational Network
 
-# Use Ubuntu 20.04 as base image
+# CPython 3.10 donor image. The app must run on the same Python the CI test
+# job uses (3.10 — see .github/workflows/deploy.yml); focal's system Python is
+# 3.8 and the requirements.txt pins do not publish for it. deadsnakes no
+# longer serves focal, so the interpreter is taken from the official image
+# instead. bullseye and focal share glibc 2.31, making the binaries compatible.
+FROM python:3.10-slim-bullseye AS python310
+
+# Use Ubuntu 20.04 as base image (hard requirement: az-dcap-client and the
+# Gramine/SGX packages below are focal-specific)
 FROM ubuntu:20.04
 
 # ARGs cannot be grouped since each FROM in a Dockerfile initiates a new build
@@ -15,6 +23,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && \
     apt-get install -y curl gnupg2 binutils python3-minimal python3-pip ca-certificates wget gcc pkg-config software-properties-common && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Bring in CPython 3.10 (interpreter + pip) from the donor stage. The system
+# python3 (3.8) stays in place for the Gramine tooling; the app is invoked
+# explicitly as python3.10.
+COPY --from=python310 /usr/local /usr/local
+RUN ldconfig && python3.10 --version && python3.10 -m pip --version
 
 # Add Gramine repo
 RUN curl -fsSLo /usr/share/keyrings/gramine-keyring.gpg https://packages.gramineproject.io/gramine-keyring.gpg && \
@@ -42,7 +56,7 @@ RUN apt-get update && \
 # Install Python dependencies
 WORKDIR /app
 COPY requirements.txt .
-RUN pip3 install --no-cache-dir -r requirements.txt
+RUN python3.10 -m pip install --no-cache-dir -r requirements.txt
 
 # Build attest binary with mbedtls_gramine
 WORKDIR /app/attestation
@@ -69,4 +83,4 @@ WORKDIR /app
 EXPOSE 8000
 
 # Run the application
-ENTRYPOINT ["/bin/bash", "-c", "exec python3 run.py --host 0.0.0.0 --port 8000"]
+ENTRYPOINT ["/bin/bash", "-c", "exec python3.10 run.py --host 0.0.0.0 --port 8000"]
