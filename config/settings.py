@@ -45,7 +45,7 @@ ADMIN_USERNAME = 'azureuser'  # Default username
 # Prefer a digest (repo@sha256:...) over a tag: MRENCLAVE is only meaningful
 # alongside the exact image content that produced it, and a mutable tag can be
 # repointed underneath a recorded measurement.
-SGX_IMAGE = os.getenv('SGX_IMAGE', 'ghcr.io/relational-network/sgx-mvp:staging-latest')
+SGX_IMAGE = os.getenv('SGX_IMAGE', 'ghcr.io/relational-network/sgx-mvp:main-latest')
 
 # Host path on the SGX VM backing the enclave's encrypted /data mount. Without
 # a volume, sealed pool identity and the replay ledger are lost whenever the
