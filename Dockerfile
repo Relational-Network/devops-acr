@@ -69,4 +69,4 @@ WORKDIR /app
 EXPOSE 8000
 
 # Run the application
-ENTRYPOINT ["/bin/bash", "-c", "exec python3 run.py --host 0.0.0.0 --port 8000 --reload"]
+ENTRYPOINT ["/bin/bash", "-c", "exec python3 run.py --host 0.0.0.0 --port 8000"]

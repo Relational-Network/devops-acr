@@ -47,10 +47,22 @@ pip install -r requirements.txt
 
 4. Create a `.env` file from the template
 ```bash
-cp env-template .env
+cp .env.example .env
 ```
 
-5. Edit the `.env` file with your Azure credentials and settings
+5. Edit `.env`. Only `ORACLE_SIGNING_KEY_HEX` is required — the oracle routes
+   need nothing else, and the public protocol constants (Solana cluster,
+   program ID, TTLs) have committed defaults in `oracle/settings.py`. The Azure
+   values are needed only for the VM deployment endpoints.
+
+   Generate a signing key with:
+```bash
+python3 -c 'import secrets; print(secrets.token_hex(32))'
+```
+
+   The service **refuses to start** without a valid key, and logs the derived
+   public key on startup. That public key is what gets pinned into the measured
+   enclave image as `ORACLE_PUBKEY_HEX`.
 
 6. Run the application
 ```bash
@@ -61,53 +73,51 @@ The API will be available at http://localhost:8000
 
 ## Deployment to Azure Container Apps
 
-### Prerequisites
+Deployment is automated: pushing to `main` runs
+[`.github/workflows/deploy.yml`](.github/workflows/deploy.yml), which tests,
+builds, pushes to ACR, provisions the oracle key as a Container App secret,
+deploys, and then asserts the running oracle is healthy and signing with the
+key the enclave expects.
 
-- Azure subscription
-- Azure Container Registry (ACR)
-- Azure Key Vault (for storing secrets)
-- GitHub repository (for CI/CD)
+There is no supported manual path. Building by hand skips the post-deploy
+assertion that the oracle public key matches the one measured into the
+enclave's MRENCLAVE — the failure that mismatch causes (every protected enclave
+request failing authorisation) is otherwise very hard to trace.
 
-### Manual Deployment
+### One-time setup
 
-1. Build the Docker image
-```bash
-docker build -t yourregistry.azurecr.io/relational-devops:latest .
-```
+Azure authentication uses **GitHub OIDC federated credentials**, so no
+long-lived Azure secret is stored. See
+[`docs/deployment/keys-and-secrets.md`](../trusted-compute-MVP/docs/deployment/keys-and-secrets.md)
+in the trusted-compute-MVP repo for the `az ad app federated-credential`
+commands and the full key inventory.
 
-2. Push the image to ACR
-```bash
-az acr login --name yourregistry
-docker push yourregistry.azurecr.io/relational-devops:latest
-```
+Repository **secrets**:
 
-3. Deploy the Container App using ARM template
-```bash
-az deployment group create \
-  --resource-group your-resource-group \
-  --template-file deployment/container-app-template.json \
-  --parameters containerImage=yourregistry.azurecr.io/relational-devops:latest
-```
+| Secret | What it is |
+|---|---|
+| `ORACLE_SIGNING_KEY_HEX` | 32-byte Ed25519 seed, hex. The only true secret this service holds. |
+| `SSH_PUBLIC_KEY` | Public half of the SGX VM SSH key. |
 
-### CI/CD with GitHub Actions
+Repository **variables** (non-secret):
 
-1. Store the following secrets in your GitHub repository:
-   - `AZURE_CREDENTIALS` - Service principal credentials
-   - `AZURE_SUBSCRIPTION_ID` - Your Azure subscription ID
-   - `AZURE_RESOURCE_GROUP` - Resource group name
-   - `ACR_LOGIN_SERVER` - ACR login server URL
-   - `ACR_USERNAME` - ACR username
-   - `ACR_PASSWORD` - ACR password
-
-2. Push to the main branch to trigger deployment
+| Variable | What it is |
+|---|---|
+| `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | OIDC federated identity |
+| `AZURE_VNET_NAME`, `AZURE_SUBNET_NAME` | Network for the SGX VMs |
+| `ORACLE_PUBKEY_HEX` | Oracle public key measured into the enclave; asserted after deploy |
+| `SGX_IMAGE` | Enclave image the deployer runs on the SGX VM (prefer a digest) |
 
 ## Scaling Configuration
 
-The application will automatically scale based on:
-- HTTP request concurrency (10 concurrent requests per instance)
-- CPU utilization (80% threshold)
-- Min replicas: 1 (configurable)
-- Max replicas: 10 (configurable)
+The Container App is pinned to **exactly one replica**
+(`--min-replicas 1 --max-replicas 1`).
+
+This is not a capacity decision. The oracle is a single signing identity whose
+public key is measured into the enclave's MRENCLAVE, so horizontal scaling buys
+nothing: a second replica holding the same key adds no authority, and one
+holding a different key would be rejected by the enclave outright. Multi-oracle
+consensus is explicitly future work.
 
 ## API Documentation
 
@@ -119,4 +129,13 @@ The application uses Azure Managed Identity when deployed to Container Apps. For
 
 ## Environment Variables
 
-See `env-template` for required environment variables.
+See [`.env.example`](.env.example). The short version:
+
+- **`ORACLE_SIGNING_KEY_HEX` is the only secret**, and the only variable the
+  oracle routes require. The service will not start without it.
+- Azure values (`AZURE_*`, `SSH_PUBLIC_KEY`, `SGX_IMAGE`) are deployment
+  identity, needed only for the VM endpoints. They are supplied by CI in Azure
+  and are not committed.
+- Public protocol constants (`SOLANA_CLUSTER`, `DRT_PROGRAM_ID`,
+  `SOLANA_RPC_URL`, the TTLs) have committed defaults in `oracle/settings.py`
+  and only need setting to override them.

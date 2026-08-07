@@ -1,12 +1,38 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Relational Network
 
+# Build, test and deploy the devops-acr service (Azure TEE deploy API + oracle)
+# to Azure Container Apps.
+#
+# The oracle is a SINGLE IDENTITY: it is pinned to one replica, because its
+# Ed25519 public key is measured into the enclave's MRENCLAVE and a second
+# replica signing with the same key gains nothing while a second key would be
+# rejected by the enclave outright.
+#
+# Auth uses GitHub OIDC federated credentials — no long-lived Azure secret is
+# stored. See docs/deployment/keys-and-secrets.md for the one-time setup.
+#
+# Required repository SECRETS:
+#   ORACLE_SIGNING_KEY_HEX   32-byte Ed25519 seed, hex
+#   SSH_PUBLIC_KEY           public half of the SGX VM SSH key
+# Required repository VARIABLES:
+#   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
+#   AZURE_VNET_NAME, AZURE_SUBNET_NAME
+#   ORACLE_PUBKEY_HEX        expected oracle public key (asserted post-deploy)
+#   SGX_IMAGE                enclave image the deployer runs on the SGX VM
+
 name: Deploy to Azure Container Apps
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
+
+# Never let two deploys race: the second would fight the first over the
+# Container App revision and the oracle secret.
+concurrency:
+  group: devops-acr-deploy
+  cancel-in-progress: false
 
 env:
   AZURE_CONTAINER_REGISTRY: relationalregistry
@@ -14,59 +40,177 @@ env:
   RESOURCE_GROUP: relational-network
   CONTAINER_APP_ENVIRONMENT: relational-ca-env
 
+permissions:
+  contents: read
+  id-token: write # required for OIDC federated login
+
 jobs:
-  build-and-deploy:
+  test:
+    name: Lint and Test
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-      # Authenticate GitHub Actions to Azure
-      - name: Azure login
-        uses: azure/login@v1
+      - uses: actions/setup-python@v5
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          python-version: '3.10'
+          cache: pip
 
-      # Required for Buildx + cache
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Install dependencies
+        run: pip install -r requirements.txt
 
-      # Login to ACR using Azure CLI
-      - name: Login to Azure Container Registry
+      - name: Oracle unit tests
+        run: pytest tests/ -q
+
+      # requirements.txt pins exact versions precisely so this cannot drift.
+      # A fresh install that cannot import the app would otherwise only be
+      # discovered as a crash-looping revision after deploy.
+      - name: Import check
+        env:
+          ORACLE_SIGNING_KEY_HEX: ${{ secrets.ORACLE_SIGNING_KEY_HEX }}
+        run: python -c "import app; print('app imports cleanly')"
+
+  deploy:
+    name: Build and Deploy
+    runs-on: ubuntu-latest
+    needs: test
+    outputs:
+      fqdn: ${{ steps.fqdn.outputs.fqdn }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Azure Container Registry
         run: az acr login --name ${{ env.AZURE_CONTAINER_REGISTRY }}
 
-      # Build & push image
-      - name: Build and push image to ACR
-        uses: docker/build-push-action@v4
+      - name: Build and push image
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          tags: relationalregistry.azurecr.io/${{ env.CONTAINER_APP_NAME }}:${{ github.sha }}
+          tags: ${{ env.AZURE_CONTAINER_REGISTRY }}.azurecr.io/${{ env.CONTAINER_APP_NAME }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Deploy image (no env vars here)
-      - name: Deploy image to Azure Container Apps
-        uses: azure/container-apps-deploy-action@v1
+      # Provision the oracle signing key as a Container App SECRET, then
+      # reference it by secretref. Passing it through --set-env-vars directly
+      # would store the seed in the revision spec in clear text.
+      - name: Provision oracle signing key
+        run: |
+          az containerapp secret set \
+            --name "${{ env.CONTAINER_APP_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --secrets "oracle-signing-key=${{ secrets.ORACLE_SIGNING_KEY_HEX }}"
+
+      - name: Deploy image
+        uses: azure/container-apps-deploy-action@v2
         with:
           resourceGroup: ${{ env.RESOURCE_GROUP }}
           containerAppName: ${{ env.CONTAINER_APP_NAME }}
           containerAppEnvironment: ${{ env.CONTAINER_APP_ENVIRONMENT }}
           ingress: external
           targetPort: 8000
-          imageToDeploy: relationalregistry.azurecr.io/${{ env.CONTAINER_APP_NAME }}:${{ github.sha }}
+          imageToDeploy: ${{ env.AZURE_CONTAINER_REGISTRY }}.azurecr.io/${{ env.CONTAINER_APP_NAME }}:${{ github.sha }}
 
-      # Update environment variables
-      - name: Update Container App Environment Variables via CLI
+      # Public protocol constants (cluster, program ID, TTLs) are NOT set here:
+      # they have committed defaults in oracle/settings.py. Only the secret and
+      # the deployment identity are injected.
+      - name: Configure environment and pin to a single replica
         run: |
           az containerapp update \
-            --name ${{ env.CONTAINER_APP_NAME }} \
-            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --name "${{ env.CONTAINER_APP_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --min-replicas 1 --max-replicas 1 \
             --set-env-vars \
-              AZURE_SUBSCRIPTION_ID=${{ secrets.AZURE_SUBSCRIPTION_ID }} \
-              AZURE_RESOURCE_GROUP=${{ secrets.AZURE_RESOURCE_GROUP }} \
-              AZURE_LOCATION=${{ secrets.AZURE_LOCATION }} \
-              AZURE_VNET_NAME=${{ secrets.AZURE_VNET_NAME }} \
-              AZURE_SUBNET_NAME=${{ secrets.AZURE_SUBNET_NAME }} \
+              ORACLE_SIGNING_KEY_HEX=secretref:oracle-signing-key \
+              AZURE_SUBSCRIPTION_ID="${{ vars.AZURE_SUBSCRIPTION_ID }}" \
+              AZURE_RESOURCE_GROUP="${{ env.RESOURCE_GROUP }}" \
+              AZURE_LOCATION="westeurope" \
+              AZURE_VNET_NAME="${{ vars.AZURE_VNET_NAME }}" \
+              AZURE_SUBNET_NAME="${{ vars.AZURE_SUBNET_NAME }}" \
+              SGX_IMAGE="${{ vars.SGX_IMAGE }}" \
               SSH_PUBLIC_KEY="${{ secrets.SSH_PUBLIC_KEY }}"
+
+      - name: Resolve ingress FQDN
+        id: fqdn
+        run: |
+          FQDN=$(az containerapp show \
+            --name "${{ env.CONTAINER_APP_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --query properties.configuration.ingress.fqdn -o tsv)
+          echo "fqdn=${FQDN}" >> "$GITHUB_OUTPUT"
+          echo "Deployed to https://${FQDN}"
+
+  verify:
+    name: Verify Oracle
+    runs-on: ubuntu-latest
+    needs: deploy
+    steps:
+      # The service refuses to start without a valid signing key, so a healthy
+      # response here also proves the secret was provisioned correctly.
+      - name: Wait for the oracle to become healthy
+        id: health
+        run: |
+          URL="https://${{ needs.deploy.outputs.fqdn }}/oracle/v1/health"
+          for i in $(seq 1 15); do
+            if BODY=$(curl -sf --max-time 15 "$URL"); then
+              echo "$BODY" > health.json
+              echo "$BODY"
+              exit 0
+            fi
+            echo "waiting for oracle... ($i/15)"
+            sleep 10
+          done
+          echo "::error::Oracle health endpoint never became reachable at $URL"
+          exit 1
+
+      - name: Assert signing key is loaded
+        run: |
+          OK=$(python3 -c "import json;print(json.load(open('health.json'))['signing_key_ok'])")
+          if [ "$OK" != "True" ]; then
+            echo "::error::Oracle reports signing_key_ok=$OK"
+            exit 1
+          fi
+          echo "signing_key_ok=True"
+
+      # THE cross-repo invariant. The enclave verifies oracle assertions against
+      # a public key baked into its MRENCLAVE at build time. If the deployed
+      # oracle signs with a different key, every protected enclave request fails
+      # authorisation — and nothing else in either repo would catch it.
+      - name: Assert oracle public key matches the key measured into the enclave
+        run: |
+          EXPECTED="${{ vars.ORACLE_PUBKEY_HEX }}"
+          ACTUAL=$(python3 -c "import json;print(json.load(open('health.json'))['oracle_pubkey'])")
+
+          if [ -z "$EXPECTED" ]; then
+            echo "::warning::ORACLE_PUBKEY_HEX variable is not set yet."
+            echo "::warning::Set it to ${ACTUAL} and rebuild the enclave so the two agree."
+            exit 0
+          fi
+
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::Oracle public key does not match the enclave's pinned key!"
+            echo "::error::Deployed: $ACTUAL"
+            echo "::error::Expected: $EXPECTED  (ORACLE_PUBKEY_HEX)"
+            echo "The enclave will reject every oracle assertion until these agree."
+            echo "Rotating the oracle key requires an enclave rebuild and a new MRENCLAVE."
+            exit 1
+          fi
+          echo "Oracle public key matches the enclave's pinned key."
+
+      - name: Summary
+        run: |
+          {
+            echo "## Oracle deployment"
+            echo '```json'
+            cat health.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

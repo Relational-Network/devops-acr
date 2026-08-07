@@ -1,25 +1,44 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Relational Network
 
+# Direct dependencies, pinned to exact versions.
+#
+# These were previously `>=` with no upper bound, which is a latent build
+# failure: the Dockerfile pip-installs this file, so a rebuild silently picks up
+# whatever is current. That already broke — azure-mgmt-resource 26.0.0 dropped
+# the top-level `ResourceManagementClient` re-export, so a fresh image would
+# crash on import while the running container (built against an older release)
+# stayed healthy.
+#
+# Transitive dependencies are NOT locked here. If the image build needs to be
+# fully reproducible, generate a lock with `pip freeze` in a clean venv.
+#
+# To upgrade: bump deliberately, run `pytest tests/`, and confirm `python -c
+# "import app"` still succeeds.
+
 # Azure SDK dependencies
-azure-identity>=1.15.0
-azure-mgmt-resource>=23.0.1
-azure-mgmt-network>=25.1.0
-azure-mgmt-compute>=30.3.0
+azure-identity==1.25.3
+azure-mgmt-resource==26.0.0
+azure-mgmt-network==31.0.1
+azure-mgmt-compute==38.2.0
 
 # FastAPI and web server
-fastapi>=0.110.0
-uvicorn>=0.27.1
-pydantic>=2.6.1
+fastapi==0.141.1
+uvicorn==0.52.1
+pydantic==2.13.4
 
 # Utilities
-python-dotenv>=1.0.1
-click>=8.1.7
+python-dotenv==1.2.2
+click==8.4.2
+
+# Oracle (Ed25519 signing/verification, base58, RPC client)
+pynacl==1.6.2
+base58==2.1.1
+httpx==0.28.1
 
 # Testing
-pytest>=8.0.1
-httpx>=0.27.0
+pytest==9.1.1
 
 # Code quality
-black>=24.2.0
-flake8>=7.0.0
+black==26.5.1
+flake8==7.3.0

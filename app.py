@@ -16,9 +16,13 @@ from pathlib import Path
 # Add project root to sys.path to allow imports
 sys.path.append(str(Path(__file__).resolve().parent))
 
+from nacl.signing import SigningKey
+
 from scripts.azure_deployer import AzureVMDeployer
 from attestation.attestation_client import AttestationClient
 from config import settings
+from oracle import settings as oracle_settings
+from oracle.router import router as oracle_router
 
 # Configure logging
 logging.basicConfig(
@@ -47,6 +51,52 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Single-oracle chain-claim verification (stateless; run as one replica —
+# one oracle identity for the MVP)
+app.include_router(oracle_router)
+
+
+@app.on_event("startup")
+async def validate_oracle_signing_key() -> None:
+    """Fail fast if the oracle signing key is missing or malformed.
+
+    Without this the service starts happily and every call to
+    /oracle/v1/verify-chain-claim returns 503 oracle_unavailable, because the
+    key is re-derived per request in oracle/router.py. That failure surfaces
+    far from its cause — as an enclave-side oracle outage — so refuse to start
+    instead, and log the derived public key, which is the value that must be
+    pinned into the measured enclave image as ORACLE_PUBKEY_HEX.
+    """
+    key_hex = oracle_settings.ORACLE_SIGNING_KEY_HEX
+    if not key_hex:
+        raise RuntimeError(
+            "ORACLE_SIGNING_KEY_HEX is not set. Generate a 32-byte Ed25519 seed with "
+            "`python3 -c 'import secrets; print(secrets.token_hex(32))'` and provision it "
+            "as a Container App secret. See docs/deployment/keys-and-secrets.md."
+        )
+
+    try:
+        seed = bytes.fromhex(key_hex)
+    except ValueError as exc:
+        raise RuntimeError("ORACLE_SIGNING_KEY_HEX is not valid hex.") from exc
+
+    if len(seed) != 32:
+        raise RuntimeError(
+            f"ORACLE_SIGNING_KEY_HEX must decode to 32 bytes, got {len(seed)}."
+        )
+
+    public_key = SigningKey(seed).verify_key.encode().hex()
+    logger.info(
+        "Oracle signing key loaded. issuer=%s cluster=%s program=%s",
+        oracle_settings.ORACLE_ISSUER,
+        oracle_settings.SOLANA_CLUSTER,
+        oracle_settings.DRT_PROGRAM_ID,
+    )
+    logger.info(
+        "Oracle public key (pin this into the enclave as ORACLE_PUBKEY_HEX): %s",
+        public_key,
+    )
 
 # In-memory store for tracking deployments
 # TODO: Replace with persistent storage in production.

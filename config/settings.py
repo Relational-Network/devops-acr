@@ -39,5 +39,18 @@ SECURITY_TYPE = 'TrustedLaunch'
 SSH_PUBLIC_KEY = os.getenv('SSH_PUBLIC_KEY')
 ADMIN_USERNAME = 'azureuser'  # Default username
 
+# SGX enclave image deployed to the VM. Built and signed by the
+# trusted-compute-MVP enclave CI, which prints the digest for each build.
+#
+# Prefer a digest (repo@sha256:...) over a tag: MRENCLAVE is only meaningful
+# alongside the exact image content that produced it, and a mutable tag can be
+# repointed underneath a recorded measurement.
+SGX_IMAGE = os.getenv('SGX_IMAGE', 'ghcr.io/relational-network/sgx-mvp:staging-latest')
+
+# Host path on the SGX VM backing the enclave's encrypted /data mount. Without
+# a volume, sealed pool identity and the replay ledger are lost whenever the
+# container is replaced rather than merely restarted.
+SGX_DATA_DIR = os.getenv('SGX_DATA_DIR', '/opt/sgx-mvp/data')
+
 # Logging Configuration
 LOGGING_LEVEL = os.getenv('LOGGING_LEVEL', 'INFO')  # Options: DEBUG, INFO, WARNING, ERROR

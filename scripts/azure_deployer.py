@@ -8,7 +8,11 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from azure.identity import DefaultAzureCredential
-from azure.mgmt.resource import ResourceManagementClient
+# Import from the explicit subpackage rather than the azure.mgmt.resource
+# top level. azure-mgmt-resource 26.0.0 dropped the top-level re-export, so
+# `from azure.mgmt.resource import ResourceManagementClient` raises ImportError
+# on a fresh install. The subpackage path works on both old and new versions.
+from azure.mgmt.resource.resources import ResourceManagementClient
 from azure.mgmt.network import NetworkManagementClient
 from azure.mgmt.compute import ComputeManagementClient
 from datetime import datetime
@@ -385,7 +389,7 @@ class AzureVMDeployer:
 
     # Pull Docker image
     echo "Pulling Docker image..."
-    sudo docker pull binglekruger/ntls-ntc:v2
+    sudo docker pull __SGX_IMAGE__
 
     # Verify image installation
     echo "Verifying Docker image installation..."
@@ -396,7 +400,7 @@ class AzureVMDeployer:
     TEMP_CONTAINER_ID=$(sudo docker run -d --name temp-container \\
         --device=/dev/sgx_enclave \\
         --device=/dev/sgx_provision \\
-        binglekruger/ntls-ntc:v2)
+        __SGX_IMAGE__)
 
     # Wait for container to initialize
     echo "Waiting for container to initialize..."
@@ -422,12 +426,21 @@ class AzureVMDeployer:
 
     # Run the final container with the HTTPS port (443)
     echo "Running final Docker container on HTTPS port..."
+
+    # Persist the enclave's encrypted /data across container replacement. It
+    # holds the sealed pool identity and the replay ledger; without a volume
+    # they survive a restart only because the same container is reused, and a
+    # re-pull loses them. The image drops to UID/GID 10001 before starting
+    # gramine-sgx, so the directory must be owned by that user.
+    sudo install -d -m 0750 -o 10001 -g 10001 __SGX_DATA_DIR__
+
     sudo docker run -d -p 443:8081 \\
         --restart=unless-stopped \\
         --name ntls-server \\
         --device=/dev/sgx_enclave \\
         --device=/dev/sgx_provision \\
-        binglekruger/ntls-ntc:v2
+        -v __SGX_DATA_DIR__:/data \\
+        __SGX_IMAGE__
 
     # Check if container is running
     echo "Checking container status..."
@@ -441,6 +454,15 @@ class AzureVMDeployer:
 
     echo "Setup completed successfully!"
     '''
+
+            # Substitute deployment config into the script. Plain .replace()
+            # rather than an f-string or .format(): the script body contains
+            # shell braces such as `awk '{print $1}'` that both would choke on.
+            script_content = (
+                script_content
+                .replace("__SGX_IMAGE__", settings.SGX_IMAGE)
+                .replace("__SGX_DATA_DIR__", settings.SGX_DATA_DIR)
+            )
 
             # The script extension needs to be base64-encoded
             import base64
