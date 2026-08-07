@@ -487,15 +487,43 @@ class AzureVMDeployer:
         -v __SGX_DATA_DIR__:/data \\
         __SGX_IMAGE__
 
-    # Check if container is running
-    echo "Checking container status..."
-    if sudo docker ps | grep -q ntls-server; then
-        echo "Container 'ntls-server' is running successfully!"
-        echo "The HTTPS server is now accessible at https://$(hostname -I | awk '{print $1}')/health"
-    else
-        echo "WARNING: Container appears to have stopped. Checking logs for errors..."
-        sudo docker logs ntls-server
+    # Wait for the enclave to actually serve TLS before declaring success.
+    #
+    # `docker ps` right after `docker run -d` proves nothing: the container is
+    # listed as running while the enclave is still booting, and it stays listed
+    # for a moment even when the process is about to die. A crash inside the
+    # enclave therefore used to be reported as "setup_script: succeeded", and
+    # the only downstream symptom was the attestation preflight failing with a
+    # bare connection error. Poll the real endpoint instead, and make the
+    # deployment fail loudly with the container logs attached.
+    #
+    # Gramine parses a ~21,000-line manifest and hashes every trusted file at
+    # startup, so first boot is slow; allow five minutes.
+    echo "Waiting for the enclave to serve HTTPS on 443..."
+    READY=0
+    for i in $(seq 1 100); do
+        if ! sudo docker ps --format '{{.Names}}' | grep -qx ntls-server; then
+            echo "ERROR: container 'ntls-server' is no longer running."
+            break
+        fi
+        if curl -sk --max-time 5 https://127.0.0.1/health >/dev/null 2>&1; then
+            READY=1
+            break
+        fi
+        sleep 3
+    done
+
+    if [ "$READY" != "1" ]; then
+        echo "ERROR: enclave did not serve HTTPS within the timeout."
+        echo "--- docker ps -a ---"
+        sudo docker ps -a
+        echo "--- docker logs ntls-server ---"
+        sudo docker logs --tail 200 ntls-server 2>&1 || true
+        exit 1
     fi
+
+    echo "Container 'ntls-server' is running and serving requests."
+    echo "The HTTPS server is now accessible at https://$(hostname -I | awk '{print $1}')/health"
 
     echo "Setup completed successfully!"
     '''
