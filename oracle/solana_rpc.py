@@ -43,6 +43,10 @@ class SolanaRpc:
         except RpcError:
             return False
 
+    async def get_slot(self) -> int:
+        """Current finalized slot, for the redemption age bound."""
+        return int(await self._call("getSlot", [{"commitment": "finalized"}]))
+
     async def get_finalized_transaction(self, signature: str) -> Optional[Dict[str, Any]]:
         """Return the transaction response, or None if not finalized/found."""
         return await self._call(

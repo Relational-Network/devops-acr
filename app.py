@@ -62,7 +62,7 @@ async def validate_oracle_signing_key() -> None:
     """Fail fast if the oracle signing key is missing or malformed.
 
     Without this the service starts happily and every call to
-    /oracle/v1/verify-chain-claim returns 503 oracle_unavailable, because the
+    /oracle/v1/verify-transaction returns 503 oracle_unavailable, because the
     key is re-derived per request in oracle/router.py. That failure surfaces
     far from its cause — as an enclave-side oracle outage — so refuse to start
     instead, and log the derived public key, which is the value that must be

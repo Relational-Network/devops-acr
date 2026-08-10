@@ -23,9 +23,16 @@ DRT_PROGRAM_ID = os.getenv(
 # Container App secret in deployment; never baked into the image.
 ORACLE_SIGNING_KEY_HEX = os.getenv("ORACLE_SIGNING_KEY_HEX", "")
 
-# Assertion / claim lifetimes (seconds)
+# Assertion lifetime (seconds). The enclave rejects anything older.
 ORACLE_ASSERTION_TTL = int(os.getenv("ORACLE_ASSERTION_TTL", "300"))
-ORACLE_MAX_CLAIM_TTL = int(os.getenv("ORACLE_MAX_CLAIM_TTL", "900"))
+
+# How far back a redemption may be presented, in slots (~400ms each, so the
+# default is roughly 24 hours). This is a bound on how much RPC history the
+# oracle will look through, not the anti-replay control -- that is the
+# enclave's sealed ledger. Raising it lets a redeemer come back to an
+# unredeemed burn later; lowering it shortens the window in which a leaked
+# ephemeral key could collect someone else's result.
+ORACLE_MAX_SLOT_AGE = int(os.getenv("ORACLE_MAX_SLOT_AGE", "216000"))
 
 ORACLE_ISSUER = os.getenv("ORACLE_ISSUER", "relational-oracle-1")
 ORACLE_KEY_ID = os.getenv("ORACLE_KEY_ID", "oracle-1")
